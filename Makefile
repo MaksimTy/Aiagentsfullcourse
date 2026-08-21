@@ -6,6 +6,7 @@ SHELL := /bin/bash
 
 PY      ?= python3
 VENV    ?= .venv
+PYTHON  := $(if $(wildcard $(VENV)/bin/python),$(VENV)/bin/python,$(PY))
 RUNS    ?= 5
 WORKERS ?= 4
 SUITE   ?= main
@@ -38,7 +39,7 @@ help:  ## показать список команд
 ## ------------------------------------------------------------------ ##
 
 doctor:  ## проверить окружение: python, docker, ключи, права, модель
-	@$(PY) tools/doctor.py
+	@$(PYTHON) tools/doctor.py
 
 install:  ## создать venv и установить зависимости
 	@$(PY) -m venv $(VENV)
