@@ -28,6 +28,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+
+from tools.env import load_env_file
+
+load_env_file()
+
 RUNS_DIR = Path(os.environ.get("AGENT_RUNS_DIR", "runs"))
 
 
@@ -40,10 +45,10 @@ class Task:
     """Иммутабельна: агент не имеет права переписать задачу под себя."""
     prompt: str
     postcondition: Callable[[str], tuple[bool, str]] | None = None
-    max_steps: int = 16
-    max_seconds: float = 300.0
-    max_tokens: int = 200_000
-    max_cost_usd: float = 0.50
+    max_steps: int = int(os.environ.get("AGENT_MAX_STEPS", 16))
+    max_seconds: float = float(os.environ.get("AGENT_MAX_SECONDS", 300))
+    max_tokens: int = int(os.environ.get("AGENT_MAX_TOKENS", 200_000))
+    max_cost_usd: float = (os.environ.get("AAGENT_MAX_COST_USD", 0.50))
 
 
 @dataclass
@@ -141,6 +146,7 @@ class Tool:
 class ToolRegistry:
     def __init__(self, tools: Iterable[Tool]) -> None:
         self._tools = {t.name: t for t in tools}
+        
 
     def schemas(self) -> list[dict[str, Any]]:
         return [
@@ -298,13 +304,13 @@ class OpenAICompatLLM:
     def __init__(self, model: str | None = None) -> None:
         from openai import OpenAI          # импорт внутри: не нужен для тестов
         self.client = OpenAI(base_url=os.environ.get("OPENAI_BASE_URL") or None)
-        self.model = model or os.environ.get("AGENT_MODEL", "gpt-4o-mini")
+        self.model = model or os.environ.get("AGENT_MODEL_MAIN", "")
         self.price_in = float(os.environ.get("PRICE_IN_PER_MTOK", "0.15"))
         self.price_out = float(os.environ.get("PRICE_OUT_PER_MTOK", "0.60"))
 
     def chat(self, window: list[dict], tools: list[dict]) -> Reply:
         resp = self.client.chat.completions.create(
-            model=self.model, messages=window, tools=tools, temperature=0,
+            model=self.model, messages=window, tools=tools, temperature=0
         )
         msg = resp.choices[0].message
         calls = [
@@ -452,6 +458,7 @@ def finish(reason: str, history: list[dict], budget: Budget, trace: Trace,
 # --------------------------------------------------------------------------- #
 
 def _factorial(n: int) -> str:
+    print(_factorial.__name__, n)
     n = int(n)
     if n < 0:
         raise ValueError("факториал определён только для n >= 0")
