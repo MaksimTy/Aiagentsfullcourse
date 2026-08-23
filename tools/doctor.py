@@ -19,44 +19,15 @@ from importlib.metadata import version, PackageNotFoundError
 from pathlib import Path
 from typing import Any
 
+from env import load_env_file
 
-def _load_env_file(env_path: str = ".env") -> None:
-    """Load environment variables from .env file without external dependencies.
-    
-    Simple parser that handles:
-    - KEY=value
-    - KEY="value"
-    - KEY='value'
-    - Comments starting with #
-    """
-    env_file = Path(env_path)
-    if not env_file.exists():
-        return
-    
-    content = env_file.read_text(encoding="utf-8")
-    for line in content.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        
-        # Parse KEY=value
-        match = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)=(.*)$', line)
-        if match:
-            key = match.group(1)
-            value = match.group(2).strip()
-            
-            # Remove quotes
-            if (value.startswith('"') and value.endswith('"')) or \
-               (value.startswith("'") and value.endswith("'")):
-                value = value[1:-1]
-            
-            # Only set if not already set
-            if key not in os.environ:
-                os.environ[key] = value
+from importlib.metadata import packages_distributions
 
 
 # Load .env file if it exists
-_load_env_file()
+load_env_file()
+
+dist_map = packages_distributions()
 
 
 # =============================================================================
@@ -66,16 +37,18 @@ _load_env_file()
 class CheckResult:
     """Represents the result of a single check."""
     
-    def __init__(self, name: str, status: str, message: str):
+    def __init__(self, name: str, status: str, message: str, result: str):
         self.name = name
         self.status = status
         self.message = message
+        self.result = result
     
     def to_dict(self) -> dict[str, str]:
         return {
             "name": self.name,
             "status": self.status,
-            "message": self.message
+            "message": self.message,
+            "result": self.result
         }
 
 
@@ -99,13 +72,15 @@ class PythonVersionCheck(Check):
             return CheckResult(
                 name="Python version",
                 status="OK",
-                message=f"Python {py_version.major}.{py_version.minor}.{py_version.micro}"
+                message=f"Python {py_version.major}.{py_version.minor}.{py_version.micro}",
+                result="success"
             )
         else:
             return CheckResult(
                 name="Python version",
                 status="FAIL",
-                message=f"Python {py_version.major}.{py_version.minor}.{py_version.micro}"
+                message=f"Python {py_version.major}.{py_version.minor}.{py_version.micro}",
+                result="error"
             )
 
 
@@ -119,7 +94,8 @@ class DockerCheck(Check):
             return CheckResult(
                 name="Docker",
                 status="SKIP",
-                message="Docker не установлен (необязательно для базовой работы)"
+                message="Docker не установлен (необязательно для базовой работы)",
+                result="success"
             )
         
         try:
@@ -135,19 +111,22 @@ class DockerCheck(Check):
                 return CheckResult(
                     name="Docker",
                     status="OK",
-                    message="Docker доступен и работает"
+                    message="Docker доступен и работает",
+                    result="success"
                 )
             else:
                 return CheckResult(
                     name="Docker",
                     status="FAIL",
-                    message="Docker установлен, но не работает"
+                    message="Docker установлен, но не работает",
+                    result="error"
                 )
         except (subprocess.TimeoutExpired, Exception) as e:
             return CheckResult(
                 name="Docker",
                 status="FAIL",
-                message=f"Ошибка проверки Docker: {e}"
+                message=f"Ошибка проверки Docker: {e}",
+                result="error"
             )
 
 
@@ -162,13 +141,15 @@ class ApiKeyCheck(Check):
             return CheckResult(
                 name="OPENAI_API_KEY",
                 status="OK",
-                message="Ключ API установлен"
+                message="Ключ API установлен",
+                result="success"
             )
         else:
             return CheckResult(
                 name="OPENAI_API_KEY",
                 status="FAIL",
-                message="OPENAI_API_KEY не установлен"
+                message="OPENAI_API_KEY не установлен",
+                result="error"
             )
 
 
@@ -187,13 +168,15 @@ class WritePermissionsCheck(Check):
             return CheckResult(
                 name="Права на запись в runs/",
                 status="OK",
-                message=f"Можно писать в {runs_dir}"
+                message=f"Можно писать в {runs_dir}",
+                result="success"
             )
         except Exception as e:
             return CheckResult(
                 name="Права на запись в runs/",
                 status="FAIL",
-                message=f"Ошибка записи в {runs_dir}: {e}"
+                message=f"Ошибка записи в {runs_dir}: {e}",
+                result="error"
             )
 
 
@@ -237,9 +220,10 @@ class ProjectStateChecker:
         
         for check in self._checks:
             result = check.run()
-            checks.append(result.to_dict())
+            result_dict = result.to_dict()
+            checks.append(result_dict)
             
-            if result.status == "FAIL":
+            if result_dict["result"] == "error":
                 all_ok = False
                 errors.append(self._format_error(result))
         
@@ -274,15 +258,32 @@ def check_project_state() -> dict[str, Any]:
 
 
 # =============================================================================
-# SOLID-compliant refactoring of check_dependencies()
+# Universal library checking with automatic module name detection
 # =============================================================================
 
-# Mapping from package names to module names for import
-PACKAGE_TO_MODULE = {
-    "python-dotenv": "dotenv",
-    "pyyaml": "yaml",
-    "sqlite-vec": "sqlite_vec",
-}
+
+def _find_module_name(package_name: str) -> str | None:
+    """
+    Automatically determine the module name for a package.
+        
+    Args:
+        package_name: The pip package name (e.g., "sqlite-vec", "opentelemetry-sdk")
+        
+    Returns:
+        The module name to import (e.g., "sqlite_vec", "opentelemetry")
+    """
+
+    global dist_map
+
+    for item in list(filter(lambda x: package_name in [pkg.lower() for pkg in x[1]], dist_map.items())):
+        module_name = item[0].lower()
+        try:
+            __import__(module_name)
+            return module_name
+        except Exception:
+            continue
+
+    return None
 
 
 def _parse_requirements(requirements_path: str = "requirements.txt") -> list[tuple[str, str]]:
@@ -323,8 +324,8 @@ def _parse_requirements(requirements_path: str = "requirements.txt") -> list[tup
         match = re.match(r'^([a-zA-Z0-9_-]+)', package_spec)
         if match:
             package_name = match.group(1)
-            # Map to module name
-            module_name = PACKAGE_TO_MODULE.get(package_name, package_name)
+            # Automatically find module name
+            module_name = _find_module_name(package_name)
             packages.append((module_name, package_spec))
     
     return packages
@@ -334,14 +335,17 @@ def _parse_version_spec(spec: str) -> tuple[str, str | None, str | None]:
     """
     Parse a version specification into (package_name, operator, version).
     
+    Supports operators: >=, <=, >, <, ==, !=, ~= (compatible release)
+    
     Examples:
         "openai>=1.40" -> ("openai", ">=", "1.40")
         "pydantic>=2.7" -> ("pydantic", ">=", "2.7")
         "numpy>=1.26" -> ("numpy", ">=", "1.26")
         "pytest>=8.2" -> ("pytest", ">=", "8.2")
+        "package~=1.4" -> ("package", "~=", "1.4")
         "package" -> ("package", None, None)
     """
-    match = re.match(r'^([a-zA-Z0-9_-]+)(>=|<=|>|<|==|!=)?(.+)?$', spec.strip())
+    match = re.match(r'^([a-zA-Z0-9_-]+)(>=|<=|>|<|==|!=|~=)?(.+)?$', spec.strip())
     if match:
         name = match.group(1)
         op = match.group(2)
@@ -384,7 +388,7 @@ def _version_satisfies(installed: str, operator: str | None, required: str | Non
     
     Args:
         installed: The installed version string
-        operator: The version operator (>=, <=, >, <, ==, !=) or None
+        operator: The version operator (>=, <=, >, <, ==, !=, ~=) or None
         required: The required version string or None
     
     Returns:
@@ -407,6 +411,26 @@ def _version_satisfies(installed: str, operator: str | None, required: str | Non
         return cmp == 0
     elif operator == '!=':
         return cmp != 0
+    elif operator == '~=':
+        # Compatible release: ~=X.Y means >=X.Y, ==X.*
+        # ~=X.Y.Z means >=X.Y.Z, ==X.Y.*
+        parts = [int(x) for x in re.sub(r'[^\d.]', '', required).split('.')]
+        if len(parts) >= 2:
+            # Check if installed >= required
+            if cmp < 0:
+                return False
+            # Check if installed is in the compatible range
+            # For ~=X.Y: must be < (X+1).0
+            # For ~=X.Y.Z: must be < X.(Y+1)
+            if len(parts) == 2:
+                # ~=X.Y - check major version matches
+                installed_parts = [int(x) for x in re.sub(r'[^\d.]', '', installed).split('.')]
+                return installed_parts[0] == parts[0]
+            else:
+                # ~=X.Y.Z - check major.minor match
+                installed_parts = [int(x) for x in re.sub(r'[^\d.]', '', installed).split('.')]
+                return installed_parts[0] == parts[0] and installed_parts[1] == parts[1]
+        return cmp >= 0
     
     return True
 
@@ -429,7 +453,8 @@ class PackageCheck(Check):
             return CheckResult(
                 name=f"Пакет {self._package_spec}",
                 status="FAIL",
-                message="Не установлен"
+                message="Не установлен",
+                result="error"
             )
         
         # Try to get the installed version
@@ -440,7 +465,8 @@ class PackageCheck(Check):
             return CheckResult(
                 name=f"Пакет {self._package_spec}",
                 status="OK",
-                message="Установлен"
+                message="Установлен",
+                result="success"
             )
         
         # Check version compatibility
@@ -449,20 +475,23 @@ class PackageCheck(Check):
                 return CheckResult(
                     name=f"Пакет {self._package_spec}",
                     status="OK",
-                    message=f"Установлен (версия {installed_version}, требуется {operator}{required_version})"
+                    message=f"Установлен (версия {installed_version}, требуется {operator}{required_version})",
+                    result="success"
                 )
             else:
                 return CheckResult(
                     name=f"Пакет {self._package_spec}",
                     status="FAIL",
-                    message=f"Версия {installed_version} не удовлетворяет требованию {operator}{required_version}"
+                    message=f"Версия {installed_version} не удовлетворяет требованию {operator}{required_version}",
+                    result="error"
                 )
         
         # No version requirement, just check if installed
         return CheckResult(
             name=f"Пакет {self._package_spec}",
             status="OK",
-            message=f"Установлен (версия {installed_version})"
+            message=f"Установлен (версия {installed_version})",
+            result="success"
         )
 
 
@@ -485,9 +514,10 @@ class RequiredPackagesCheck(Check):
         for module_name, package_spec in self._packages:
             check = PackageCheck(module_name, package_spec)
             result = check.run()
-            checks.append(result.to_dict())
+            result_dict = result.to_dict()
+            checks.append(result_dict)
             
-            if result.status == "FAIL":
+            if result_dict["result"] == "error":
                 all_ok = False
                 # Include package name in error message
                 errors.append(f"{result.name}: {result.message}")
@@ -502,13 +532,15 @@ class RequiredPackagesCheck(Check):
             return CheckResult(
                 name="Зависимости",
                 status="OK",
-                message="Все пакеты установлены"
+                message="Все пакеты установлены",
+                result="success"
             )
         else:
             return CheckResult(
                 name="Зависимости",
                 status="FAIL",
-                message=f"Обнаружено {len(errors)} проблем с пакетами"
+                message=f"Обнаружено {len(errors)} проблем с пакетами",
+                result="error"
             )
     
     def get_checks(self) -> list[dict[str, str]]:
@@ -538,7 +570,8 @@ class ModelCheck(Check):
             return CheckResult(
                 name="Модель",
                 status="SKIP",
-                message="Пропущена (нет API ключа)"
+                message="Пропущена (нет API ключа)",
+                result="success"
             )
         
         try:
@@ -562,13 +595,15 @@ class ModelCheck(Check):
             return CheckResult(
                 name="Модель",
                 status="OK",
-                message=f"Модель {self._model} доступна (ответ: {answer})"
+                message=f"Модель {self._model} доступна (ответ: {answer})",
+                result="success"
             )
         except Exception as e:
             return CheckResult(
                 name="Модель",
                 status="FAIL",
-                message=f"Ошибка доступа к модели: {e}"
+                message=f"Ошибка доступа к модели: {e}",
+                result="error"
             )
 
 
@@ -618,8 +653,9 @@ class DependenciesChecker:
                 if not check.is_ok():
                     all_ok = False
             else:
-                checks.append(result.to_dict())
-                if result.status == "FAIL":
+                result_dict = result.to_dict()
+                checks.append(result_dict)
+                if result_dict["result"] == "error":
                     all_ok = False
                     errors.append(f"Модель {check._model} недоступна: {result.message}")
                 elif result.status == "SKIP":
@@ -648,23 +684,53 @@ def _describe_runtime() -> str:
     venv_path = os.environ.get("VIRTUAL_ENV")
     if venv_path:
         return venv_path
+    try:
+        executable = Path(sys.executable).resolve()
+    except Exception:
+        return "не активирован"
 
-    executable = Path(sys.executable).resolve()
     project_root = Path(__file__).resolve().parent.parent
-    project_venv = project_root / ".venv" / "bin" / ("python.exe" if sys.platform == "win32" else "python")
-    if executable == project_venv or str(executable).startswith(str(project_root / ".venv")):
-        return str(project_venv)
+    project_venv_dir = project_root / ".venv"
+    project_venv_bin = project_venv_dir / "bin"
+
+    # If the executable resides inside the project's .venv/bin (or Scripts on Windows),
+    # report the project .venv path even if VIRTUAL_ENV is not set.
+    exe_parent = executable.parent
+    if exe_parent == project_venv_bin or str(executable).startswith(str(project_venv_dir)):
+        return str(project_venv_dir)
+
+    # On Windows virtualenvs, executable may be in Scripts
+    if sys.platform == "win32":
+        if exe_parent == (project_venv_dir / "Scripts") or str(executable).startswith(str(project_venv_dir)):
+            return str(project_venv_dir)
 
     return "не активирован"
 
 
 def main() -> int:
     """Run all checks and print results."""
+    # Describe runtime and project venv
     runtime = _describe_runtime()
+    project_root = Path(__file__).resolve().parent.parent
+    print(project_root)
+    project_venv_dir = project_root / ".venv"
+    project_venv_exists = project_venv_dir.exists()
+    interpreter = Path(sys.executable).resolve()
+    print(interpreter)
+    interpreter_in_project_venv = False
+    try:
+        interpreter_in_project_venv = str(interpreter).startswith(str(project_venv_dir))
+    except Exception:
+        interpreter_in_project_venv = False
+
     print("=" * 60)
     print("Проверка окружения проекта (make doctor)")
-    print(f"Python: {sys.executable}")
-    print(f"Venv: {runtime}")
+    print(f"Python executable: {sys.executable}")
+    if project_venv_exists:
+        used = "(используется)" if interpreter_in_project_venv or os.environ.get("VIRTUAL_ENV") == str(project_venv_dir) else "(не используется)"
+        print(f"Project .venv: {project_venv_dir} {used}")
+    else:
+        print(f"Project .venv: {project_venv_dir} (отсутствует)")
     print("=" * 60)
     
     # Check project state
@@ -686,12 +752,14 @@ def main() -> int:
     # Summary
     print("\n" + "=" * 60)
     all_ok = state_result["ok"] and deps_result["ok"]
+
+
     if all_ok:
-        print(f"Результат: ✓ Всё ОК, можно продолжать (venv: {runtime})")
+        print(f"Результат: ✓ Всё ОК, можно продолжать.")
         print("=" * 60)
         return 0
     else:
-        print(f"Результат: ✗ Обнаружены проблемы (venv: {runtime}):")
+        print(f"Результат: ✗ Обнаружены проблемы:")
         for error in state_result["errors"] + deps_result["errors"]:
             print(f"  - {error}")
         print("=" * 60)
