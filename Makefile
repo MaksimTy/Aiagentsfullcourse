@@ -53,7 +53,7 @@ install:  ## создать venv и установить зависимости
 
 lab:  ## запустить лабораторную: make lab LAB=lab01 [TASK="..."]
 	@test -n "$(LAB)" || (echo "укажи LAB=lab01"; exit 1)
-	@$(PYTHON) -m labs.$(LAB).starter.main $(if $(TASK),--task "$(TASK)",) --live
+	@$(PYTHON) -m labs.$(LAB).starter.main $(if $(TASK),--task "$(TASK)",)
 
 check:  ## проверка приёмки: make check LAB=lab01  (или make check m04 для модуля)
 	@test -n "$(LAB)" || (echo "укажи LAB=lab01 или m04"; exit 1)
