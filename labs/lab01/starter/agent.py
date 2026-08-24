@@ -24,144 +24,21 @@ import math
 import os
 import sys
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any
 
-
-from src.agent.llm import LLM, Reply
-from src.agent.tool import Tool, ToolResult, ToolRegistry
-
-
+from src.agent import (
+    Budget, 
+    Task, 
+    Tool, 
+    ToolResult, 
+    ToolRegistry, 
+    Trace,
+    LLM, 
+    Reply)
 from tools.env import load_env_file
 
 load_env_file()
-
-RUNS_DIR = Path(os.environ.get("AGENT_RUNS_DIR", "runs"))
-
-
-# --------------------------------------------------------------------------- #
-# Задача и бюджеты
-# --------------------------------------------------------------------------- #
-
-@dataclass(frozen=True)
-class Task:
-    """Иммутабельна: агент не имеет права переписать задачу под себя."""
-    prompt: str
-    postcondition: Callable[[str], tuple[bool, str]] | None = None
-    max_steps: int = int(os.environ.get("AGENT_MAX_STEPS", 16))
-    max_seconds: float = float(os.environ.get("AGENT_MAX_SECONDS", 300))
-    max_tokens: int = int(os.environ.get("AGENT_MAX_TOKENS", 200_000))
-    max_cost_usd: float = (os.environ.get("AAGENT_MAX_COST_USD", 0.50))
-
-
-@dataclass
-class Budget:
-    task: Task
-    started: float = field(default_factory=time.monotonic)
-    steps: int = 0
-    tokens: int = 0 
-    cost_usd: float = 0.0
-    empty_steps: int = 0
-    warned: bool = False
-
-    def elapsed(self) -> float:
-        return time.monotonic() - self.started
-
-    def exceeded(self) -> str | None:
-        if self.steps >= self.task.max_steps:
-            return "budget_steps"
-        if self.elapsed() >= self.task.max_seconds:
-            return "budget_time"
-        if self.tokens >= self.task.max_tokens:
-            return "budget_tokens"
-        if self.cost_usd >= self.task.max_cost_usd:
-            return "budget_cost"
-        return None
-
-    def ratios(self) -> dict[str, float]:
-        return {
-            "steps": self.steps / max(self.task.max_steps, 1),
-            "time": self.elapsed() / max(self.task.max_seconds, 1e-9),
-            "tokens": self.tokens / max(self.task.max_tokens, 1),
-            "cost": self.cost_usd / max(self.task.max_cost_usd, 1e-9),
-        }
-
-    def soft_warning(self) -> str | None:
-        """Мягкий порог 80%: агент успевает подвести итог, а не обрубается."""
-        if self.warned:
-            return None
-        worst = max(self.ratios().values())
-        if worst >= 0.8:
-            self.warned = True
-            return (
-                "ВНИМАНИЕ: бюджет прогона израсходован более чем на 80%. "
-                "Заверши работу: дай лучший доступный ответ и явно перечисли, "
-                "что осталось непроверенным."
-            )
-        return None
-
-    def snapshot(self) -> dict[str, str]:
-        return {
-            "steps": f"{self.steps}/{self.task.max_steps}",
-            "tokens": f"{self.tokens}/{self.task.max_tokens}",
-            "cost": f"{self.cost_usd:.4f}/{self.task.max_cost_usd}",
-            "seconds": f"{self.elapsed():.1f}/{self.task.max_seconds}",
-        }
-
-
-
-
-# --------------------------------------------------------------------------- #
-# Трейс: JSONL, всегда включён
-# --------------------------------------------------------------------------- #
-
-class Trace:
-    def __init__(self, run_id: str) -> None:
-        RUNS_DIR.mkdir(parents=True, exist_ok=True)
-        self.run_id = run_id
-        self.path = RUNS_DIR / f"{run_id}.jsonl"
-        self._fh = self.path.open("a", encoding="utf-8")
-
-    def _write(self, rec: dict[str, Any]) -> None:
-        rec = {"run_id": self.run_id, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ",
-                                                          time.gmtime()), **rec}
-        self._fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        self._fh.flush()
-
-    @staticmethod
-    def _hash(obj: Any) -> str:
-        blob = json.dumps(obj, sort_keys=True, ensure_ascii=False, default=str)
-        return hashlib.sha256(blob.encode()).hexdigest()[:12]
-
-    def step(self, n: int, window: list[dict], reply: "Reply", budget: Budget,
-             latency_ms: int) -> None:
-        self._write({
-            "t": "step", "step": n, "model": reply.model,
-            "in_tokens": reply.in_tokens, "out_tokens": reply.out_tokens,
-            "cost_usd": round(reply.cost_usd, 6), "latency_ms": latency_ms,
-            "window_hash": self._hash(window), "window_msgs": len(window),
-            "decision": "tool_call" if reply.tool_calls else
-                        ("answer" if reply.text.strip() else "empty"),
-            "tools": [c["name"] for c in reply.tool_calls],
-            "budget": budget.snapshot(),
-        })
-
-    def tool(self, n: int, call: dict, res: ToolResult, ms: int) -> None:
-        self._write({
-            "t": "tool", "step": n, "tool": call["name"],
-            "args": call.get("arguments", {}), "status": res.status,
-            "error_code": res.error_code, "retryable": res.retryable,
-            "hint": res.hint, "truncated": res.truncated,
-            "bytes_out": len(res.content), "duration_ms": ms,
-        })
-
-    def finish(self, reason: str, budget: Budget, answer: str | None) -> None:
-        self._write({"t": "finish", "reason": reason,
-                     "budget": budget.snapshot(),
-                     "answer_chars": len(answer or "")})
-        self._fh.close()
-
 
 
 
