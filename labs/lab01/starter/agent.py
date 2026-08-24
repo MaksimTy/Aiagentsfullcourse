@@ -29,6 +29,9 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 
+from src.agent.llm import LLM, Reply
+
+
 from tools.env import load_env_file
 
 load_env_file()
@@ -250,21 +253,11 @@ class Trace:
         self._fh.close()
 
 
-# --------------------------------------------------------------------------- #
-# Модель: тонкий адаптер. Меняется один класс, агент не трогается.
-# --------------------------------------------------------------------------- #
-
-@dataclass
-class Reply:
-    text: str = ""
-    tool_calls: list[dict[str, Any]] = field(default_factory=list)
-    model: str = "fake"
-    in_tokens: int = 0
-    out_tokens: int = 0
-    cost_usd: float = 0.0
 
 
-class FakeLLM:
+
+
+class FakeLLM(LLM):
     """Детерминированная модель для тестов цикла: без сети и без денег.
 
     Сценарий: сначала пробует factorial с неверным аргументом (проверяем,
@@ -298,7 +291,7 @@ class FakeLLM:
                      cost_usd=in_tokens * 1.5e-7 + 40 * 6e-7)
 
 
-class OpenAICompatLLM:
+class OpenAICompatLLM(LLM):
     """Реальный провайдер. Специально в 30 строк: адаптер, а не фреймворк."""
 
     def __init__(self, model: str | None = None) -> None:
@@ -372,7 +365,7 @@ EMPTY_LIMIT = 2          # сколько пустых шагов терпим
 REPEAT_LIMIT = 3         # сколько одинаковых вызовов терпим
 
 
-def run(task: Task, tools: ToolRegistry, llm, trace: Trace) -> dict[str, Any]:
+def run(task: Task, tools: ToolRegistry, llm: LLM, trace: Trace) -> dict[str, Any]:
     budget = Budget(task=task)
     history: list[dict] = [{"role": "user", "content": task.prompt}]
     seen: list[str] = []
