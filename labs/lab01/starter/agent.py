@@ -30,6 +30,7 @@ from typing import Any, Callable, Iterable
 
 
 from src.agent.llm import LLM, Reply
+from src.agent.tool import Tool, ToolResult, ToolRegistry
 
 
 from tools.env import load_env_file
@@ -109,97 +110,6 @@ class Budget:
         }
 
 
-# --------------------------------------------------------------------------- #
-# Инструменты: ошибка возвращается как данные
-# --------------------------------------------------------------------------- #
-
-MAX_TOOL_OUTPUT = 4000  # символов; всё лишнее обрезается с флагом truncated
-
-
-@dataclass
-class ToolResult:
-    status: str                 # "ok" | "error"
-    content: str = ""
-    error_code: str | None = None
-    hint: str | None = None
-    retryable: bool = False
-    truncated: bool = False
-
-    def to_model(self) -> str:
-        """То, что реально увидит модель. Ошибка должна быть действенной."""
-        if self.status == "ok":
-            tail = "\n[...вывод обрезан...]" if self.truncated else ""
-            return self.content + tail
-        parts = [f"ОШИБКА {self.error_code}"]
-        if self.hint:
-            parts.append(f"Подсказка: {self.hint}")
-        parts.append("Повтор с теми же аргументами не поможет."
-                     if not self.retryable else "Повтор возможен.")
-        return " ".join(parts)
-
-
-@dataclass
-class Tool:
-    name: str
-    description: str
-    parameters: dict[str, Any]
-    fn: Callable[..., str]
-
-
-class ToolRegistry:
-    def __init__(self, tools: Iterable[Tool]) -> None:
-        self._tools = {t.name: t for t in tools}
-        
-
-    def schemas(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.parameters,
-                },
-            }
-            for t in self._tools.values()
-        ]
-
-    @staticmethod
-    def fingerprint(call: dict[str, Any]) -> str:
-        """Хеш (имя + нормализованные аргументы) для детектора повторов."""
-        payload = json.dumps(
-            {"n": call["name"], "a": call.get("arguments", {})},
-            sort_keys=True, ensure_ascii=False,
-        )
-        return hashlib.sha256(payload.encode()).hexdigest()[:12]
-
-    def invoke(self, call: dict[str, Any]) -> ToolResult:
-        """Никогда не выбрасывает наружу: всё превращается в ToolResult."""
-        name = call.get("name", "")
-        args = call.get("arguments", {}) or {}
-        tool = self._tools.get(name)
-        if tool is None:
-            return ToolResult(
-                status="error", error_code="unknown_tool", retryable=False,
-                hint="Доступные инструменты: " + ", ".join(sorted(self._tools)),
-            )
-        missing = [k for k in tool.parameters.get("required", []) if k not in args]
-        if missing:
-            return ToolResult(
-                status="error", error_code="missing_argument", retryable=True,
-                hint=f"Не переданы обязательные аргументы: {', '.join(missing)}",
-            )
-        try:
-            out = str(tool.fn(**args))
-        except TypeError as exc:
-            return ToolResult(status="error", error_code="bad_arguments",
-                              retryable=True, hint=str(exc))
-        except Exception as exc:                      # noqa: BLE001
-            return ToolResult(status="error", error_code=type(exc).__name__,
-                              retryable=False, hint=str(exc)[:300])
-        truncated = len(out) > MAX_TOOL_OUTPUT
-        return ToolResult(status="ok", content=out[:MAX_TOOL_OUTPUT],
-                          truncated=truncated)
 
 
 # --------------------------------------------------------------------------- #
@@ -255,8 +165,6 @@ class Trace:
 
 
 
-
-
 class FakeLLM(LLM):
     """Детерминированная модель для тестов цикла: без сети и без денег.
 
@@ -295,7 +203,7 @@ class OpenAICompatLLM(LLM):
     """Реальный провайдер. Специально в 30 строк: адаптер, а не фреймворк."""
 
     def __init__(self, model: str | None = None) -> None:
-        from openai import OpenAI          # импорт внутри: не нужен для тестов
+        from openai import OpenAI         # импорт внутри: не нужен для тестов
         self.client = OpenAI(base_url=os.environ.get("OPENAI_BASE_URL") or None)
         self.model = model or os.environ.get("AGENT_MODEL_MAIN", "")
         self.price_in = float(os.environ.get("PRICE_IN_PER_MTOK", "0.15"))
@@ -477,7 +385,8 @@ DEMO_TOOLS = ToolRegistry([
                      "Используй вместо самостоятельного счёта в уме."),
         parameters={
             "type": "object",
-            "properties": {"n": {"type": "integer", "minimum": 0,
+            "properties": {"n": {"type": "integer", 
+                                 "minimum": 0,
                                  "maximum": 2000,
                                  "description": "неотрицательное целое"}},
             "required": ["n"],
@@ -512,11 +421,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-steps", type=int, default=16)
     ap.add_argument("--max-cost", type=float, default=0.50)
     args = ap.parse_args(argv)
+    
+   
+    args.live = 'live' if args.live else os.environ.get('AGENT_MODE')
+    print(args.live)
 
     run_id = "r-" + hashlib.sha256(
         (args.task + str(time.time())).encode()).hexdigest()[:6]
     trace = Trace(run_id)
-    llm = OpenAICompatLLM() if args.live else FakeLLM()
+    llm = {
+        'live': OpenAICompatLLM(), 
+        'fake':  FakeLLM() }.get(args.live)
+
     task = Task(prompt=args.task, max_steps=args.max_steps,
                 max_cost_usd=args.max_cost)
 
