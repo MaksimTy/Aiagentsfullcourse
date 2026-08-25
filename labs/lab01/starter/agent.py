@@ -36,6 +36,7 @@ from src.agent import (
     Trace,
     LLM, 
     Reply)
+from src.tools_repo import DEMO_TOOLS
 from tools.env import load_env_file
 
 load_env_file()
@@ -230,60 +231,6 @@ def finish(reason: str, history: list[dict], budget: Budget, trace: Trace,
         "trace": str(trace.path),
     }
 
-
-# --------------------------------------------------------------------------- #
-# Демонстрационные инструменты
-# --------------------------------------------------------------------------- #
-
-def _factorial(n: int) -> str:
-    print(_factorial.__name__, n)
-    n = int(n)
-    if n < 0:
-        raise ValueError("факториал определён только для n >= 0")
-    if n > 2000:
-        raise ValueError("n слишком велико, предел 2000")
-    return str(math.factorial(n))
-
-
-def _read_file(path: str) -> str:
-    p = Path(path)
-    if not p.exists():
-        siblings = sorted(x.name for x in (p.parent if p.parent.exists()
-                                           else Path(".")).iterdir())[:10]
-        raise FileNotFoundError("файла нет; рядом: " + ", ".join(siblings))
-    return p.read_text(encoding="utf-8", errors="replace")
-
-
-DEMO_TOOLS = ToolRegistry([
-    Tool(
-        name="factorial",
-        description=("Точно вычисляет факториал целого неотрицательного n. "
-                     "Возвращает десятичную запись числа. Предел n = 2000. "
-                     "Используй вместо самостоятельного счёта в уме."),
-        parameters={
-            "type": "object",
-            "properties": {"n": {"type": "integer", 
-                                 "minimum": 0,
-                                 "maximum": 2000,
-                                 "description": "неотрицательное целое"}},
-            "required": ["n"],
-        },
-        fn=_factorial,
-    ),
-    Tool(
-        name="read_file",
-        description=("Читает текстовый файл целиком и возвращает содержимое. "
-                     "Путь относительно корня проекта. Если файла нет, "
-                     "вернёт ошибку со списком соседних файлов."),
-        parameters={
-            "type": "object",
-            "properties": {"path": {"type": "string",
-                                    "description": "относительный путь"}},
-            "required": ["path"],
-        },
-        fn=_read_file,
-    ),
-])
 
 
 # --------------------------------------------------------------------------- #
