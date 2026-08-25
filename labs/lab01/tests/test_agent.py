@@ -19,34 +19,8 @@ from src.agent import Budget, Task, Trace, Tool, ToolRegistry, Reply, LLM
 
 from src.tools_repo import DEMO_TOOLS
 
+from labs.lab01.starter.llm import (FakeLLM, OpenAICompatLLM, InfiniteToolCallLLM)
 
-# --------------------------------------------------------------------------- #
-# Фиктивная модель, которая всегда просит инструмент
-# --------------------------------------------------------------------------- #
-
-class InfiniteToolCallLLM(LLM):
-    """
-    Фиктивная модель, которая всегда просит инструмент.
-    
-    Используется для тестирования того, что цикл не может выполниться
-    больше max_steps раз.
-    """
-    model = "infinite-tool-call"
-    
-    def __init__(self, tool_name: str = "factorial"):
-        self.tool_name = tool_name
-        self.calls = 0
-    
-    def chat(self, window: list[dict], tools: list[dict]) -> Reply:
-        self.calls += 1
-        in_tokens = sum(len(str(m)) for m in window) // 4
-        return Reply(
-            tool_calls=[{"name": self.tool_name, "arguments": {"n": 5}}],
-            model=self.model,
-            in_tokens=in_tokens,
-            out_tokens=20,
-            cost_usd=in_tokens * 1.5e-7 + 20 * 6e-7
-        )
 
 
 # --------------------------------------------------------------------------- #
@@ -65,7 +39,7 @@ def test_cycle_respects_max_steps():
     # Создаём задачу с очень маленьким лимитом шагов
     task = Task(
         prompt="Посчитай факториал",
-        max_steps=3,  # Очень мало шагов
+        max_steps=2,  # Очень мало шагов
         max_cost_usd=10.0  # Дорого, чтобы не срабатывал по стоимости
     )
     
@@ -75,7 +49,7 @@ def test_cycle_respects_max_steps():
             trace = Trace(run_id="test-max-steps")
             
             # Запускаем цикл с фиктивной моделью
-            result = run(task, DEMO_TOOLS, InfiniteToolCallLLM(), trace)
+            result = run(task, DEMO_TOOLS, OpenAICompatLLM(), trace)
             
             # Проверяем, что цикл завершился по правильной причине
             assert result["reason"] == "budget_steps", \

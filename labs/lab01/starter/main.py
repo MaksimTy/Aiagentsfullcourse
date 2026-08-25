@@ -2,7 +2,6 @@ from .agent import main as agn
 
 
 def main():
-    print(__name__)
     agn()
     
     
